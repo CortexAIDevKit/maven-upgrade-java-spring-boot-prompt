@@ -1,3 +1,9 @@
+---
+name: "maven-upgrade-java-spring-boot"
+description: "Skill to upgrade java and spring-boot"
+argument-hint: "application-id (required), module-name (optional), java-version (optional), spring-boot-version (optional)"
+---
+
 # Maven Upgrade Java Spring Boot Skill
 
 This skill orchestrates Maven-based Java and Spring Boot upgrades with
@@ -13,31 +19,18 @@ execution.
 - `timestamp` (optional externally, otherwise computed once by orchestrator in
   format `yyyyMMdd-HHmmss`)
 
-## Scripts
+## Execution
 
-All scripts are under `.github/skills/maven-upgrade-java-spring-boot/scripts`.
+Run this from the repository root after replacing the placeholders with your actual values:
 
-1. `orchestrator.sh`
-   - Computes defaults and timestamp once.
-   - Initializes run artifacts and `run.log`.
-   - Calls `pre-flight.sh`.
-   - Calls `execute-rewrite.sh` in non-blocking mode.
-   - Maintains `run.log` status and log pointers.
+```bash
+bash .github/skills/maven-upgrade-java-spring-boot/scripts/orchestrator.sh \
+  --application-id "<application-id>" \
+  --module-name "<module-name>" \
+  --java-version "<java-version>" \
+  --spring-boot-version "<spring-boot-version>"
+```
 
-2. `pre-flight.sh`
-   - Validates:
-     - Java version in `{17, 21, 25}`
-     - Spring Boot version in `{3.5, 4.0}`
-     - module name is `.` or listed in root `pom.xml` modules
-     - target module has a valid `pom.xml`
-   - Writes validation output to `preflight.log`.
-   - On failure writes `pre-flight-error.log` and exits non-zero.
-
-3. `execute-rewrite.sh`
-   - Launches `mvn rewrite:run` against root module or selected module.
-   - Supports single-module and multi-module projects.
-   - Runs asynchronously and returns immediately.
-   - Writes launch/runtime details to `execute-rewrite.log`.
 
 ## Artifacts
 
