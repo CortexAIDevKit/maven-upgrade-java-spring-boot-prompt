@@ -65,16 +65,36 @@ RUN_LOG="$RUN_DIR/run.log"
 EXECUTE_REWRITE_LOG="$RUN_DIR/execute-rewrite.log"
 PID_FILE="$RUN_DIR/execute-rewrite.pid"
 REWRITE_MAVEN_PLUGIN_VERSION="6.40.0"
+ROOT_REWRITE_FILE="$WORKSPACE_ROOT/rewrite.yml"
+
+GENERATE_REWRITE_SCRIPT="$SCRIPT_DIR/generate-rewrite-config.sh"
+if [[ ! -x "$GENERATE_REWRITE_SCRIPT" ]]; then
+  echo "generate rewrite script is missing or not executable: $GENERATE_REWRITE_SCRIPT" >&2
+  exit 1
+fi
+
+REWRITE_FLAGS="$($GENERATE_REWRITE_SCRIPT \
+  --java-version "$JAVA_VERSION" \
+  --spring-boot-version "$SPRING_BOOT_VERSION" \
+  --workspace-root "$WORKSPACE_ROOT")"
+
+if [[ -z "$REWRITE_FLAGS" ]]; then
+  echo "failed to generate rewrite flags" >&2
+  exit 1
+fi
+
+read -r -a REWRITE_FLAGS_ARRAY <<< "$REWRITE_FLAGS"
 
 if [[ "$MODULE_NAME" == "." ]]; then
-  MVN_CMD=(mvn -U org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run)
+  MVN_CMD=(mvn -U org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
 else
-  MVN_CMD=(mvn -pl "$MODULE_NAME" -am org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run)
+  MVN_CMD=(mvn -pl "$MODULE_NAME" -am org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
 fi
 
 {
   echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite launch"
   echo "application-id=$APPLICATION_ID module-name=$MODULE_NAME java-version=$JAVA_VERSION spring-boot-version=$SPRING_BOOT_VERSION"
+  echo "rewrite-flags=$REWRITE_FLAGS"
   printf "command="
   printf '%q ' "${MVN_CMD[@]}"
   echo
@@ -82,6 +102,11 @@ fi
 
 (
   set +e
+  cleanup_generated_rewrite() {
+    rm -f "$ROOT_REWRITE_FILE"
+  }
+  trap cleanup_generated_rewrite EXIT
+
   cd "$WORKSPACE_ROOT" || exit 1
   "${MVN_CMD[@]}" >>"$EXECUTE_REWRITE_LOG" 2>&1
   rewrite_exit_code=$?
