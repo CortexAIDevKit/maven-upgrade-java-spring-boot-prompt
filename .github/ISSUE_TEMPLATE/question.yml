@@ -1,0 +1,20 @@
+name: Question / Support
+description: Ask a question about using the `maven-upgrade-java-spring-boot` prompt
+title: "[Question]: <short summary>"
+labels: ["question"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched [existing issues](https://github.com/CortexAIDevKit/maven-upgrade-java-spring-boot-prompt/issues) and this has not already been reported.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What would you like to know? Include any relevant context (prompts used, expected outcome, etc.).
+    validations:
+      required: true

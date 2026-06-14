@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a problem with the `maven-upgrade-java-spring-boot` prompt
+title: "[Bug]: <short summary>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug in the **maven-upgrade-java-spring-boot** prompt.
+        Please fill out the sections below so we can reproduce and fix it quickly.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight checks
+      options:
+        - label: I have searched [existing issues](https://github.com/CortexAIDevKit/maven-upgrade-java-spring-boot-prompt/issues) and this has not already been reported.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the exact prompt(s), files, or actions used to trigger the bug.
+      placeholder: |
+        1. Open Copilot Chat
+        2. Invoke the prompt with prompt: "..."
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect the prompt to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What did the prompt actually do? Include any error messages or unexpected output.
+    validations:
+      required: true
+
+  - type: input
+    id: prompt-version
+    attributes:
+      label: prompt version / commit
+      description: Version, tag, or commit SHA of the prompt in use.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: VS Code version, Copilot Chat version, OS, model used, etc.
+      placeholder: |
+        - VS Code: 1.x
+        - GitHub Copilot Chat: x.y
+        - OS: macOS 14 / Windows 11 / Ubuntu 22.04
+        - Model:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / screenshots
+      description: Paste any relevant log output or screenshots. Logs will be automatically formatted into code, so no need for backticks.
+      render: shell
