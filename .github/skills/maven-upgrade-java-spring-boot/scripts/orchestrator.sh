@@ -78,6 +78,10 @@ write_run_log \
   "$RUN_LOG" \
   "$RUN_ID" \
   "$TIMESTAMP" \
+  "$APPLICATION_ID" \
+  "$MODULE_NAME" \
+  "$JAVA_VERSION" \
+  "$SPRING_BOOT_VERSION" \
   "STARTED" \
   "FAILED" \
   "FAILED" \
@@ -99,6 +103,10 @@ if ! bash "$SCRIPT_DIR/pre-flight.sh" \
     "$RUN_LOG" \
     "$RUN_ID" \
     "$TIMESTAMP" \
+    "$APPLICATION_ID" \
+    "$MODULE_NAME" \
+    "$JAVA_VERSION" \
+    "$SPRING_BOOT_VERSION" \
     "FAILED" \
     "FAILED" \
     "FAILED" \
@@ -115,6 +123,10 @@ write_run_log \
   "$RUN_LOG" \
   "$RUN_ID" \
   "$TIMESTAMP" \
+  "$APPLICATION_ID" \
+  "$MODULE_NAME" \
+  "$JAVA_VERSION" \
+  "$SPRING_BOOT_VERSION" \
   "IN-PROGRESS" \
   "SUCCESS" \
   "SUCCESS" \
@@ -137,6 +149,10 @@ if ! bash "$SCRIPT_DIR/execute-rewrite.sh" \
     "$RUN_LOG" \
     "$RUN_ID" \
     "$TIMESTAMP" \
+    "$APPLICATION_ID" \
+    "$MODULE_NAME" \
+    "$JAVA_VERSION" \
+    "$SPRING_BOOT_VERSION" \
     "FAILED" \
     "FAILED" \
     "SUCCESS" \
@@ -153,6 +169,10 @@ write_run_log \
   "$RUN_LOG" \
   "$RUN_ID" \
   "$TIMESTAMP" \
+  "$APPLICATION_ID" \
+  "$MODULE_NAME" \
+  "$JAVA_VERSION" \
+  "$SPRING_BOOT_VERSION" \
   "IN-PROGRESS" \
   "SUCCESS" \
   "SUCCESS" \
