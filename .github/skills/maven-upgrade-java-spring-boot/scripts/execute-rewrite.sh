@@ -64,11 +64,12 @@ mkdir -p "$RUN_DIR"
 RUN_LOG="$RUN_DIR/run.log"
 EXECUTE_REWRITE_LOG="$RUN_DIR/execute-rewrite.log"
 PID_FILE="$RUN_DIR/execute-rewrite.pid"
+REWRITE_MAVEN_PLUGIN_VERSION="6.40.0"
 
 if [[ "$MODULE_NAME" == "." ]]; then
-  MVN_CMD=(mvn rewrite:run)
+  MVN_CMD=(mvn -U org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run)
 else
-  MVN_CMD=(mvn -pl "$MODULE_NAME" -am rewrite:run)
+  MVN_CMD=(mvn -pl "$MODULE_NAME" -am org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run)
 fi
 
 {
