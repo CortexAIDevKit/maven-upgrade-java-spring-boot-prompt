@@ -64,8 +64,23 @@ mkdir -p "$RUN_DIR"
 RUN_LOG="$RUN_DIR/run.log"
 EXECUTE_REWRITE_LOG="$RUN_DIR/execute-rewrite.log"
 PID_FILE="$RUN_DIR/execute-rewrite.pid"
+REWRITE_COPY_FILE="$RUN_DIR/rewrite.yml"
 REWRITE_MAVEN_PLUGIN_VERSION="6.40.0"
-ROOT_REWRITE_FILE="$WORKSPACE_ROOT/rewrite.yml"
+WORKSPACE_REWRITE_FILE="$WORKSPACE_ROOT/rewrite.yml"
+
+log_execute_rewrite_line() {
+  echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" >>"$EXECUTE_REWRITE_LOG"
+}
+
+log_execute_rewrite_command() {
+  local label="$1"
+  shift
+
+  log_execute_rewrite_line "$label"
+  for argument in "$@"; do
+    printf '  %q\n' "$argument" >>"$EXECUTE_REWRITE_LOG"
+  done
+}
 
 GENERATE_REWRITE_SCRIPT="$SCRIPT_DIR/generate-rewrite-config.sh"
 if [[ ! -x "$GENERATE_REWRITE_SCRIPT" ]]; then
@@ -83,27 +98,35 @@ if [[ -z "$REWRITE_FLAGS" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$WORKSPACE_REWRITE_FILE" ]]; then
+  echo "generated rewrite file not found: $WORKSPACE_REWRITE_FILE" >&2
+  exit 1
+fi
+
+cp "$WORKSPACE_REWRITE_FILE" "$REWRITE_COPY_FILE"
+
 read -r -a REWRITE_FLAGS_ARRAY <<< "$REWRITE_FLAGS"
 
 if [[ "$MODULE_NAME" == "." ]]; then
-  MVN_CMD=(mvn -U org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
+  MVN_CMD=(mvn -B -U org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
 else
-  MVN_CMD=(mvn -pl "$MODULE_NAME" -am org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
+  MVN_CMD=(mvn -B -pl "$MODULE_NAME" -am org.openrewrite.maven:rewrite-maven-plugin:$REWRITE_MAVEN_PLUGIN_VERSION:run "${REWRITE_FLAGS_ARRAY[@]}")
 fi
 
-{
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite launch"
-  echo "application-id=$APPLICATION_ID module-name=$MODULE_NAME java-version=$JAVA_VERSION spring-boot-version=$SPRING_BOOT_VERSION"
-  echo "rewrite-flags=$REWRITE_FLAGS"
-  printf "command="
-  printf '%q ' "${MVN_CMD[@]}"
-  echo
-} >>"$EXECUTE_REWRITE_LOG"
+log_execute_rewrite_line "execute-rewrite launch"
+log_execute_rewrite_line "application-id=$APPLICATION_ID"
+log_execute_rewrite_line "module-name=$MODULE_NAME"
+log_execute_rewrite_line "java-version=$JAVA_VERSION"
+log_execute_rewrite_line "spring-boot-version=$SPRING_BOOT_VERSION"
+log_execute_rewrite_line "rewrite-file=$REWRITE_COPY_FILE"
+log_execute_rewrite_line "rewrite-flags:"
+printf '  %s\n' "$REWRITE_FLAGS" >>"$EXECUTE_REWRITE_LOG"
+log_execute_rewrite_command "command:" "${MVN_CMD[@]}"
 
 (
   set +e
   cleanup_generated_rewrite() {
-    rm -f "$ROOT_REWRITE_FILE"
+    rm -f "$WORKSPACE_REWRITE_FILE"
   }
   trap cleanup_generated_rewrite EXIT
 
@@ -119,9 +142,9 @@ fi
     fi
   fi
 
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite finished with code=$rewrite_exit_code" >>"$EXECUTE_REWRITE_LOG"
+  log_execute_rewrite_line "execute-rewrite finished with code=$rewrite_exit_code"
 ) &
 
 bg_pid=$!
 echo "$bg_pid" >"$PID_FILE"
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite started in background pid=$bg_pid" >>"$EXECUTE_REWRITE_LOG"
+log_execute_rewrite_line "execute-rewrite started in background pid=$bg_pid"

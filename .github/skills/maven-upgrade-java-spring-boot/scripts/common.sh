@@ -73,13 +73,17 @@ write_run_log() {
   local run_log_file="$1"
   local run_id="$2"
   local timestamp="$3"
-  local overall_status="$4"
-  local orchestrator_status="$5"
-  local preflight_status="$6"
-  local execute_rewrite_status="$7"
-  local orchestrator_log="$8"
-  local preflight_log="$9"
-  local execute_rewrite_log="${10}"
+  local application_id="$4"
+  local module_name="$5"
+  local java_version="$6"
+  local spring_boot_version="$7"
+  local overall_status="$8"
+  local orchestrator_status="$9"
+  local preflight_status="${10}"
+  local execute_rewrite_status="${11}"
+  local orchestrator_log="${12}"
+  local preflight_log="${13}"
+  local execute_rewrite_log="${14}"
 
   local tmp_file
   tmp_file="$(mktemp)"
@@ -88,6 +92,12 @@ write_run_log() {
 {
   "runId": "$(json_escape "$run_id")",
   "timestamp": "$(json_escape "$timestamp")",
+  "inputs": {
+    "application-id": "$(json_escape "$application_id")",
+    "module-name": "$(json_escape "$module_name")",
+    "java-version": "$(json_escape "$java_version")",
+    "spring-boot-version": "$(json_escape "$spring_boot_version")"
+  },
   "overallStatus": "$(json_escape "$overall_status")",
   "status": {
     "orchestrator": "$(json_escape "$orchestrator_status")",
@@ -172,17 +182,45 @@ extract_log_value() {
   ' "$file"
 }
 
+extract_input_value() {
+  local key="$1"
+  local file="$2"
+
+  if [[ ! -f "$file" ]]; then
+    echo ""
+    return
+  fi
+
+  awk -v key="$key" '
+    /"inputs"[[:space:]]*:[[:space:]]*\{/ { in_input = 1; next }
+    in_input && /\}/ { in_input = 0 }
+    in_input && $0 ~ "\\\"" key "\\\"" {
+      match($0, /: "[^"]*"/)
+      if (RSTART > 0) {
+        value = substr($0, RSTART + 3, RLENGTH - 4)
+        print value
+        exit
+      }
+    }
+  ' "$file"
+}
+
 update_run_log_stage() {
   local run_log_file="$1"
   local stage_key="$2"
   local stage_status="$3"
   local overall_status="$4"
 
-  local run_id timestamp current_orchestrator current_preflight current_execute
+  local run_id timestamp application_id module_name java_version spring_boot_version
+  local current_orchestrator current_preflight current_execute
   local orchestrator_log preflight_log execute_rewrite_log
 
   run_id="$(extract_json_value "runId" "$run_log_file")"
   timestamp="$(extract_json_value "timestamp" "$run_log_file")"
+  application_id="$(extract_input_value "application-id" "$run_log_file")"
+  module_name="$(extract_input_value "module-name" "$run_log_file")"
+  java_version="$(extract_input_value "java-version" "$run_log_file")"
+  spring_boot_version="$(extract_input_value "spring-boot-version" "$run_log_file")"
   current_orchestrator="$(extract_status_value "orchestrator" "$run_log_file")"
   current_preflight="$(extract_status_value "preflight" "$run_log_file")"
   current_execute="$(extract_status_value "execute-rewrite" "$run_log_file")"
@@ -210,6 +248,10 @@ update_run_log_stage() {
     "$run_log_file" \
     "$run_id" \
     "$timestamp" \
+    "$application_id" \
+    "$module_name" \
+    "$java_version" \
+    "$spring_boot_version" \
     "$overall_status" \
     "$current_orchestrator" \
     "$current_preflight" \

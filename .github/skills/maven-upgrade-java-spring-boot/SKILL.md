@@ -31,41 +31,6 @@ bash .github/skills/maven-upgrade-java-spring-boot/scripts/orchestrator.sh \
   --spring-boot-version "<spring-boot-version>"
 ```
 
-
-## Artifacts
-
-Per run artifacts are stored at:
-
-`maven-upgrade-java-spring-boot/<timestamp>/<module-name>/`
-
-Files:
-
-- `run.log`
-- `orchestrator.log`
-- `preflight.log`
-- `execute-rewrite.log`
-- `pre-flight-error.log` (on pre-flight failures)
-
-## run.log Schema
-
-```json
-{
-  "runId": "<unique identifier>",
-  "timestamp": "<yyyyMMdd-HHmmss>",
-  "overallStatus": "STARTED|IN-PROGRESS|FAILED|COMPLETED",
-  "status": {
-    "orchestrator": "SUCCESS|FAILED",
-    "preflight": "SUCCESS|FAILED",
-    "execute-rewrite": "SUCCESS|FAILED"
-  },
-  "log": {
-    "orchestrator": "maven-upgrade-java-spring-boot/<timestamp>/<module-name>/orchestrator.log",
-    "preflight": "maven-upgrade-java-spring-boot/<timestamp>/<module-name>/preflight.log",
-    "execute-rewrite": "maven-upgrade-java-spring-boot/<timestamp>/<module-name>/execute-rewrite.log"
-  }
-}
-```
-
 ## Suggested Invocation
 
 ```bash
@@ -75,3 +40,9 @@ bash .github/skills/maven-upgrade-java-spring-boot/scripts/orchestrator.sh \
   --java-version "25" \
   --spring-boot-version "4.0"
 ```
+
+## Hard constraints
+
+Strict mode: execute only requested Execution, no extra validation, no assumptions, no follow-up actions without my explicit go-ahead.
+
+Post-execution stop rule: once the orchestrator command returns, exit immediately. Do not run artifact checks, log reads, process polling, or any additional commands unless explicitly requested.

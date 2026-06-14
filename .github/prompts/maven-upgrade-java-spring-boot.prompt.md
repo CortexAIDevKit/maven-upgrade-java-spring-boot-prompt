@@ -16,13 +16,9 @@ timestamped directory per invocation.
 ## Execution order
 
 1. Start the skill `.github/skills/maven-upgrade-java-spring-boot/SKILL.md`. Do not block waiting for completion of any scripts. The skill will manage the overall workflow and timing.
+2. Once the orchestrator command returns successfully after pre-flight, stop immediately and exit. Do not run any additional commands.
 
 ## Hard constraints
 
-1. Do not run copy/cd/mvn commands before the pre-flight validation script (`pre-flight.sh`) has completed successfully.
-2. Do not run the OpenRewrite execution script (`execute-rewrite.sh`) before the pre-flight validation has completed successfully.
-3. All scripts must be executed in the context of the root directory.
-4. All outputs and logs must be written to the timestamped run directory.
-5. If pre-flight validation fails, stop execution immediately and write the error details to `pre-flight-error.log` in the run directory.
-6. After pre-flight validation succeeds, launch the OpenRewrite execution script in non-blocking mode and return immediately.
-7. Maintain a `run.log` in the run directory that captures the overall execution status and pointers to all relevant logs and artifacts.
+1. All scripts must be executed in the context of the root directory.
+2. Do not inspect logs, artifacts, process status, or repository status after the orchestrator returns.
