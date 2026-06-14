@@ -48,7 +48,11 @@ generate_run_id() {
 }
 
 json_escape() {
-  echo "${1:-}" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "${1:-}" | awk '{
+    gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
+    gsub(/\t/, "\\t"); gsub(/\r/, "\\r")
+    printf "%s%s", sep, $0; sep = "\\n"
+  }'
 }
 
 run_output_dir() {
@@ -124,6 +128,11 @@ extract_json_value() {
     return
   fi
 
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$key" '.[$k] // empty' "$file" 2>/dev/null || echo ""
+    return
+  fi
+
   awk -v key="$key" '
     $0 ~ "\\\"" key "\\\"" {
       match($0, /: "[^"]*"/)
@@ -142,6 +151,11 @@ extract_status_value() {
 
   if [[ ! -f "$file" ]]; then
     echo ""
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$key" '.status[$k] // empty' "$file" 2>/dev/null || echo ""
     return
   fi
 
@@ -168,6 +182,11 @@ extract_log_value() {
     return
   fi
 
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$key" '.log[$k] // empty' "$file" 2>/dev/null || echo ""
+    return
+  fi
+
   awk -v key="$key" '
     /"log"[[:space:]]*:[[:space:]]*\{/ { in_log = 1; next }
     in_log && /\}/ { in_log = 0 }
@@ -188,6 +207,11 @@ extract_input_value() {
 
   if [[ ! -f "$file" ]]; then
     echo ""
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg k "$key" '.inputs[$k] // empty' "$file" 2>/dev/null || echo ""
     return
   fi
 

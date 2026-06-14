@@ -103,18 +103,24 @@ if [[ "$MODULE_NAME" == "." ]]; then
 else
   TARGET_POM="$WORKSPACE_ROOT/$MODULE_NAME/pom.xml"
 
-  MODULE_LIST="$(awk '
-    /<modules>/ { in_modules=1; next }
-    /<\/modules>/ { in_modules=0 }
-    in_modules {
-      gsub(/^[ \t]+|[ \t]+$/, "", $0)
-      if ($0 ~ /<module>/) {
-        gsub(/<module>|<\/module>/, "", $0)
+  if command -v xmllint >/dev/null 2>&1; then
+    MODULE_LIST="$(xmllint --xpath '//modules/module/text()' "$ROOT_POM" 2>/dev/null \
+      | tr ' ' '\n' | grep -v '^$' || true)"
+  else
+    # awk fallback: handles simple single-line <module> elements only
+    MODULE_LIST="$(awk '
+      /<modules>/ { in_modules=1; next }
+      /<\/modules>/ { in_modules=0 }
+      in_modules {
         gsub(/^[ \t]+|[ \t]+$/, "", $0)
-        print $0
+        if ($0 ~ /<module>/) {
+          gsub(/<module>|<\/module>/, "", $0)
+          gsub(/^[ \t]+|[ \t]+$/, "", $0)
+          print $0
+        }
       }
-    }
-  ' "$ROOT_POM")"
+    ' "$ROOT_POM")"
+  fi
 
   if ! echo "$MODULE_LIST" | grep -Fxq "$MODULE_NAME"; then
     fail "module-name '$MODULE_NAME' is not declared in root pom.xml <modules>"
