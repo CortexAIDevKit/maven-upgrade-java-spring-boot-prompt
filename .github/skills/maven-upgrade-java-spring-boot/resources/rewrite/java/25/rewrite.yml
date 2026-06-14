@@ -1,0 +1,6 @@
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: org.cortexaidevkit.java.UpgradeJava25
+displayName: Upgrade Java to 25
+recipeList:
+  - org.openrewrite.java.migrate.UpgradeToJava25
