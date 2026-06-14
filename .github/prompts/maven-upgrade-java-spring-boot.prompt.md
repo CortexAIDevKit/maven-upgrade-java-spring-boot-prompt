@@ -4,7 +4,7 @@ description: "GitHub copilot prompt to upgrade java and spring-boot"
 argument-hint: "application-id (required), module-name (optional), java-version (optional), spring-boot-version (optional)"
 agent: agent
 model: GPT-5.3-Codex (copilot)
-tools: ['execute', 'read', 'edit']
+tools: ['codebase', 'search', 'editFiles', 'runCommands']
 authors: ["paul58914080@gmail.com"]
 ---
 
