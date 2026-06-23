@@ -1,184 +1,112 @@
 #!/usr/bin/env bash
-
-set -euo pipefail
+#
+# orchestrator.sh - drives the maven-upgrade-java-spring-boot pipeline.
+#
+# Responsibilities:
+#   1. Compute the run identity and the shared <timestamp> (yyyyMMdd-HHmmss).
+#   2. Own and continuously update run.log.
+#   3. Chain the steps:
+#        pre-flight  -> execute-rewrite  -> maven-build
+#      Each long-running mvn step is launched non-blocking by its own script;
+#      the orchestrator waits on the step's *.exit sentinel before chaining the
+#      next step (so build only runs once rewrite finished).
+#
+# Usage:
+#   orchestrator.sh --module-name <name|.> \
+#                   --java-version <17|21|25> \
+#                   --spring-boot-version <3.5|4.0> \
+#                   [--timestamp <yyyyMMdd-HHmmss>] \
+#                   [--base-dir <repo-root>]
+#
+# Because rewrite + build can take a long time, the SKILL launches this
+# orchestrator itself in the background (nohup ... &) and then polls run.log.
+#
+# Output: maven-upgrade-java-spring-boot/<timestamp>/<module-label>/run.log
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+# shellcheck source=common.sh
+source "${SCRIPT_DIR}/common.sh"
+parse_common_args "$@"
 
-APPLICATION_ID=""
-MODULE_NAME=""
-JAVA_VERSION=""
-SPRING_BOOT_VERSION=""
-TIMESTAMP=""
-WORKSPACE_ROOT="$(pwd)"
+LOG="${OUT_DIR}/orchestrator.log"
+: > "$LOG"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --application-id)
-      APPLICATION_ID="${2:-}"
-      shift 2
-      ;;
-    --module-name)
-      MODULE_NAME="${2:-}"
-      shift 2
-      ;;
-    --java-version)
-      JAVA_VERSION="${2:-}"
-      shift 2
-      ;;
-    --spring-boot-version)
-      SPRING_BOOT_VERSION="${2:-}"
-      shift 2
-      ;;
-    --timestamp)
-      TIMESTAMP="${2:-}"
-      shift 2
-      ;;
-    --workspace-root)
-      WORKSPACE_ROOT="${2:-}"
-      shift 2
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
+# ---- initialise run state ---------------------------------------------------
+RUN_ID="${TIMESTAMP}-$$-${RANDOM}"
+state_set runId "$RUN_ID"
+state_set timestamp "$TIMESTAMP"
+state_set overallStatus STARTED
+state_set status_orchestrator ""
+state_set status_preflight ""
+state_set status_execute_rewrite ""
+state_set status_maven_build ""
 
-if [[ -z "$APPLICATION_ID" ]]; then
-  echo "application-id is required" >&2
+log "$LOG" "==== Run ${RUN_ID} started ===="
+log "$LOG" "module='${MODULE_NAME}' (label='${MODULE_LABEL}') java='${JAVA_VERSION}' spring-boot='${SPRING_BOOT_VERSION}'"
+log "$LOG" "timestamp='${TIMESTAMP}' base-dir='${BASE_DIR}'"
+log "$LOG" "output dir: ${OUT_DIR}"
+
+COMMON_ARGS=(
+  --module-name "$MODULE_NAME"
+  --java-version "$JAVA_VERSION"
+  --spring-boot-version "$SPRING_BOOT_VERSION"
+  --timestamp "$TIMESTAMP"
+  --base-dir "$BASE_DIR"
+)
+
+abort_failed() {
+  # Orchestrator did its job (it orchestrated) even when a step fails, so
+  # status_orchestrator is SUCCESS while overallStatus reflects the failure.
+  log "$LOG" "Pipeline halted: $*"
+  state_set overallStatus FAILED
+  state_set status_orchestrator SUCCESS
+  log "$LOG" "==== Run ${RUN_ID} finished: FAILED ===="
   exit 1
+}
+
+# ---- 1. pre-flight (synchronous, fast) -------------------------------------
+state_set overallStatus AT_PRE_FLIGHT
+log "$LOG" "Step 1/3: pre-flight"
+if bash "${SCRIPT_DIR}/pre-flight.sh" "${COMMON_ARGS[@]}" >>"$LOG" 2>&1; then
+  log "$LOG" "pre-flight SUCCESS"
+else
+  abort_failed "pre-flight validation failed (see pre-flight-error.log)"
 fi
 
-MODULE_NAME="$(normalize_module_name "$MODULE_NAME")"
-JAVA_VERSION="$(normalize_java_version "$JAVA_VERSION")"
-SPRING_BOOT_VERSION="$(normalize_spring_boot_version "$SPRING_BOOT_VERSION")"
-
-if [[ -z "$TIMESTAMP" ]]; then
-  TIMESTAMP="$(timestamp_now)"
+# ---- 2. execute-rewrite (non-blocking launch, then wait on sentinel) -------
+state_set overallStatus AT_EXECUTE_REWRITE
+log "$LOG" "Step 2/3: execute-rewrite (OpenRewrite)"
+if ! bash "${SCRIPT_DIR}/execute-rewrite.sh" "${COMMON_ARGS[@]}" >>"$LOG" 2>&1; then
+  abort_failed "failed to launch execute-rewrite"
 fi
 
-RUN_ID="$(generate_run_id)"
-RUN_DIR="$(run_output_dir "$WORKSPACE_ROOT" "$TIMESTAMP" "$MODULE_NAME")"
-mkdir -p "$RUN_DIR"
-
-RUN_LOG="$RUN_DIR/run.log"
-ORCHESTRATOR_LOG="$RUN_DIR/orchestrator.log"
-PREFLIGHT_LOG="$RUN_DIR/preflight.log"
-EXECUTE_REWRITE_LOG="$RUN_DIR/execute-rewrite.log"
-MODULE_SEGMENT="$(artifact_module_segment "$MODULE_NAME")"
-
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] orchestrator started runId=$RUN_ID" >>"$ORCHESTRATOR_LOG"
-
-REL_ORCHESTRATOR_LOG="maven-upgrade-java-spring-boot/$TIMESTAMP/$MODULE_SEGMENT/orchestrator.log"
-REL_PREFLIGHT_LOG="maven-upgrade-java-spring-boot/$TIMESTAMP/$MODULE_SEGMENT/preflight.log"
-REL_EXECUTE_REWRITE_LOG="maven-upgrade-java-spring-boot/$TIMESTAMP/$MODULE_SEGMENT/execute-rewrite.log"
-
-write_run_log \
-  "$RUN_LOG" \
-  "$RUN_ID" \
-  "$TIMESTAMP" \
-  "$APPLICATION_ID" \
-  "$MODULE_NAME" \
-  "$JAVA_VERSION" \
-  "$SPRING_BOOT_VERSION" \
-  "STARTED" \
-  "FAILED" \
-  "FAILED" \
-  "FAILED" \
-  "$REL_ORCHESTRATOR_LOG" \
-  "$REL_PREFLIGHT_LOG" \
-  "$REL_EXECUTE_REWRITE_LOG"
-
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] invoking pre-flight" >>"$ORCHESTRATOR_LOG"
-if ! bash "$SCRIPT_DIR/pre-flight.sh" \
-  --application-id "$APPLICATION_ID" \
-  --module-name "$MODULE_NAME" \
-  --java-version "$JAVA_VERSION" \
-  --spring-boot-version "$SPRING_BOOT_VERSION" \
-  --timestamp "$TIMESTAMP" \
-  --workspace-root "$WORKSPACE_ROOT"; then
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] pre-flight failed" >>"$ORCHESTRATOR_LOG"
-  write_run_log \
-    "$RUN_LOG" \
-    "$RUN_ID" \
-    "$TIMESTAMP" \
-    "$APPLICATION_ID" \
-    "$MODULE_NAME" \
-    "$JAVA_VERSION" \
-    "$SPRING_BOOT_VERSION" \
-    "FAILED" \
-    "FAILED" \
-    "FAILED" \
-    "FAILED" \
-    "$REL_ORCHESTRATOR_LOG" \
-    "$REL_PREFLIGHT_LOG" \
-    "$REL_EXECUTE_REWRITE_LOG"
-  exit 1
+log "$LOG" "Waiting for execute-rewrite to complete..."
+if wait_for_exit "execute-rewrite"; then
+  log "$LOG" "execute-rewrite SUCCESS"
+else
+  rc=$?
+  [[ $rc -eq 124 ]] && abort_failed "execute-rewrite timed out"
+  abort_failed "execute-rewrite returned rc=${rc}"
 fi
 
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] pre-flight succeeded" >>"$ORCHESTRATOR_LOG"
-
-write_run_log \
-  "$RUN_LOG" \
-  "$RUN_ID" \
-  "$TIMESTAMP" \
-  "$APPLICATION_ID" \
-  "$MODULE_NAME" \
-  "$JAVA_VERSION" \
-  "$SPRING_BOOT_VERSION" \
-  "IN-PROGRESS" \
-  "SUCCESS" \
-  "SUCCESS" \
-  "FAILED" \
-  "$REL_ORCHESTRATOR_LOG" \
-  "$REL_PREFLIGHT_LOG" \
-  "$REL_EXECUTE_REWRITE_LOG"
-
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] launching execute-rewrite" >>"$ORCHESTRATOR_LOG"
-if ! bash "$SCRIPT_DIR/execute-rewrite.sh" \
-  --application-id "$APPLICATION_ID" \
-  --module-name "$MODULE_NAME" \
-  --java-version "$JAVA_VERSION" \
-  --spring-boot-version "$SPRING_BOOT_VERSION" \
-  --timestamp "$TIMESTAMP" \
-  --run-id "$RUN_ID" \
-  --workspace-root "$WORKSPACE_ROOT"; then
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite launch failed" >>"$ORCHESTRATOR_LOG"
-  write_run_log \
-    "$RUN_LOG" \
-    "$RUN_ID" \
-    "$TIMESTAMP" \
-    "$APPLICATION_ID" \
-    "$MODULE_NAME" \
-    "$JAVA_VERSION" \
-    "$SPRING_BOOT_VERSION" \
-    "FAILED" \
-    "FAILED" \
-    "SUCCESS" \
-    "FAILED" \
-    "$REL_ORCHESTRATOR_LOG" \
-    "$REL_PREFLIGHT_LOG" \
-    "$REL_EXECUTE_REWRITE_LOG"
-  exit 1
+# ---- 3. maven-build (non-blocking launch, then wait on sentinel) -----------
+state_set overallStatus AT_MAVEN_BUILD
+log "$LOG" "Step 3/3: maven-build (mvn clean install)"
+if ! bash "${SCRIPT_DIR}/maven-build.sh" "${COMMON_ARGS[@]}" >>"$LOG" 2>&1; then
+  abort_failed "failed to launch maven-build"
 fi
 
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] execute-rewrite launched in non-blocking mode" >>"$ORCHESTRATOR_LOG"
+log "$LOG" "Waiting for maven-build to complete..."
+if wait_for_exit "maven-build"; then
+  log "$LOG" "maven-build SUCCESS"
+else
+  rc=$?
+  [[ $rc -eq 124 ]] && abort_failed "maven-build timed out"
+  abort_failed "maven-build returned rc=${rc}"
+fi
 
-write_run_log \
-  "$RUN_LOG" \
-  "$RUN_ID" \
-  "$TIMESTAMP" \
-  "$APPLICATION_ID" \
-  "$MODULE_NAME" \
-  "$JAVA_VERSION" \
-  "$SPRING_BOOT_VERSION" \
-  "IN-PROGRESS" \
-  "SUCCESS" \
-  "SUCCESS" \
-  "SUCCESS" \
-  "$REL_ORCHESTRATOR_LOG" \
-  "$REL_PREFLIGHT_LOG" \
-  "$REL_EXECUTE_REWRITE_LOG"
-
-echo "[$(date +"%Y-%m-%d %H:%M:%S")] orchestrator completed without waiting for rewrite" >>"$ORCHESTRATOR_LOG"
+# ---- done -------------------------------------------------------------------
+state_set overallStatus COMPLETED
+state_set status_orchestrator SUCCESS
+log "$LOG" "==== Run ${RUN_ID} finished: COMPLETED ===="
+exit 0

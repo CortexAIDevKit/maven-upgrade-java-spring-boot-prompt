@@ -1,6 +1,6 @@
 ---
 type: specs.openrewrite.org/v1beta/recipe
-name: org.cortexaidevkit.spring.boot.UpgradeSpringBoot_4_0
-displayName: Migrate to Spring Boot 4.0 
+name: org.cortexaidevkit.spring.boot.UpgradeSpringBoot_3_5
+displayName: Migrate to Spring Boot 3.5
 recipeList:
-  - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+  - org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5

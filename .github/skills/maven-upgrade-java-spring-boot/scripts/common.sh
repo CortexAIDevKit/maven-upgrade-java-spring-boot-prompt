@@ -1,286 +1,289 @@
 #!/usr/bin/env bash
+#
+# common.sh - shared helpers for the maven-upgrade-java-spring-boot skill.
+#
+# This file is sourced by every script in this directory. It centralises:
+#   * argument parsing + defaulting of the user inputs
+#   * resolution of the per-run output directory
+#   * the run.log JSON renderer (no jq / python dependency required)
+#   * timestamped logging helpers
+#   * OpenRewrite recipe lookup tables
+#
+# Status values used in run.log:
+#   overallStatus : STARTED | IN-PROGRESS | FAILED | COMPLETED
+#   status.<step> : "" (pending) | SUCCESS | FAILED
+#
+# IMPORTANT: the <timestamp> is computed ONCE by the orchestrator and is then
+# passed to every other script via --timestamp so the whole run shares a single
+# output directory. The format is yyyyMMdd-HHmmss (24-hour clock).
 
-set -euo pipefail
+set -uo pipefail
 
-timestamp_now() {
-  date +"%Y%m%d-%H%M%S"
-}
+SKILL_NAME="maven-upgrade-java-spring-boot"
 
-normalize_module_name() {
-  local value="${1:-}"
-  if [[ -z "$value" ]]; then
-    echo "."
+# Directory holding the per-version OpenRewrite fragments that get consolidated
+# into the generated rewrite.yml. Resolved relative to this file so it works no
+# matter which script sources common.sh.
+COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOURCES_DIR="${COMMON_DIR}/../resources/rewrite"
+
+# ----------------------------------------------------------------------------
+# parse_common_args <args...>
+#   Populates the well-known globals used across all scripts and applies the
+#   documented defaults (module=., java=25, spring-boot=4.0). Creates OUT_DIR.
+# ----------------------------------------------------------------------------
+parse_common_args() {
+  MODULE_NAME=""
+  JAVA_VERSION=""
+  SPRING_BOOT_VERSION=""
+  TIMESTAMP=""
+  BASE_DIR="$(pwd)"
+  FORCE=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --module-name)         MODULE_NAME="${2:-}"; shift 2;;
+      --java-version)        JAVA_VERSION="${2:-}"; shift 2;;
+      --spring-boot-version) SPRING_BOOT_VERSION="${2:-}"; shift 2;;
+      --timestamp)           TIMESTAMP="${2:-}"; shift 2;;
+      --base-dir)            BASE_DIR="${2:-}"; shift 2;;
+      --force)               FORCE=1; shift;;
+      *) echo "WARN: ignoring unknown argument '$1'" >&2; shift;;
+    esac
+  done
+
+  # ---- defaults ----
+  MODULE_NAME="${MODULE_NAME:-.}"
+  JAVA_VERSION="${JAVA_VERSION:-25}"
+  SPRING_BOOT_VERSION="${SPRING_BOOT_VERSION:-4.0}"
+  [[ -z "$TIMESTAMP" ]] && TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+
+  # A filesystem-friendly label for the module ("." -> root).
+  if [[ "$MODULE_NAME" == "." || -z "$MODULE_NAME" ]]; then
+    MODULE_LABEL="root"
   else
-    echo "$value"
-  fi
-}
-
-normalize_java_version() {
-  local value="${1:-}"
-  if [[ -z "$value" ]]; then
-    echo "25"
-  else
-    echo "$value"
-  fi
-}
-
-normalize_spring_boot_version() {
-  local value="${1:-}"
-  if [[ -z "$value" ]]; then
-    echo "4.0"
-    return
+    MODULE_LABEL="${MODULE_NAME//\//-}"
   fi
 
-  if [[ "$value" == "4" ]]; then
-    echo "4.0"
-    return
-  fi
+  REL_DIR="${SKILL_NAME}/${TIMESTAMP}/${MODULE_LABEL}"
+  OUT_DIR="${BASE_DIR}/${REL_DIR}"
+  STATE_FILE="${OUT_DIR}/run.state"
+  RUN_LOG="${OUT_DIR}/run.log"
 
-  echo "$value"
+  mkdir -p "$OUT_DIR"
 }
 
-generate_run_id() {
-  if command -v uuidgen >/dev/null 2>&1; then
-    uuidgen
-  else
-    echo "run-$(timestamp_now)-$$"
-  fi
+# ----------------------------------------------------------------------------
+# log <logfile> <message...>
+#   Appends a timestamped line to <logfile> and echoes it to stdout.
+# ----------------------------------------------------------------------------
+log() {
+  local logfile="$1"; shift
+  local line="[$(date +%Y-%m-%dT%H:%M:%S%z)] $*"
+  printf '%s\n' "$line" | tee -a "$logfile"
 }
 
-json_escape() {
-  printf '%s' "${1:-}" | awk '{
-    gsub(/\\/, "\\\\"); gsub(/"/, "\\\"")
-    gsub(/\t/, "\\t"); gsub(/\r/, "\\r")
-    printf "%s%s", sep, $0; sep = "\\n"
-  }'
+# ----------------------------------------------------------------------------
+# state_set <key> <value>   /   state_get <key>
+#   Simple KEY=VALUE side-car (run.state) used to regenerate run.log.
+#   Avoids any dependency on jq or python. Every mutation re-renders run.log.
+# ----------------------------------------------------------------------------
+state_set() {
+  local key="$1" val="$2" tmp
+  touch "$STATE_FILE"
+  tmp="$(mktemp)"
+  grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
+  render_run_log
 }
 
-run_output_dir() {
-  local workspace_root="$1"
-  local timestamp="$2"
-  local module_name="$3"
-  local module_segment
-  module_segment="$(artifact_module_segment "$module_name")"
-  echo "$workspace_root/maven-upgrade-java-spring-boot/$timestamp/$module_segment"
+state_get() {
+  local key="$1"
+  grep "^${key}=" "$STATE_FILE" 2>/dev/null | tail -n1 | cut -d= -f2-
 }
 
-artifact_module_segment() {
-  local module_name="$1"
-  if [[ "$module_name" == "." ]]; then
-    echo "root"
-  else
-    echo "$module_name"
-  fi
-}
-
-write_run_log() {
-  local run_log_file="$1"
-  local run_id="$2"
-  local timestamp="$3"
-  local application_id="$4"
-  local module_name="$5"
-  local java_version="$6"
-  local spring_boot_version="$7"
-  local overall_status="$8"
-  local orchestrator_status="$9"
-  local preflight_status="${10}"
-  local execute_rewrite_status="${11}"
-  local orchestrator_log="${12}"
-  local preflight_log="${13}"
-  local execute_rewrite_log="${14}"
-
-  local tmp_file
-  tmp_file="$(mktemp)"
-
-  cat >"$tmp_file" <<EOF
+# ----------------------------------------------------------------------------
+# render_run_log
+#   Regenerates run.log (JSON) from the current run.state contents.
+# ----------------------------------------------------------------------------
+render_run_log() {
+  cat > "$RUN_LOG" <<EOF
 {
-  "runId": "$(json_escape "$run_id")",
-  "timestamp": "$(json_escape "$timestamp")",
-  "inputs": {
-    "application-id": "$(json_escape "$application_id")",
-    "module-name": "$(json_escape "$module_name")",
-    "java-version": "$(json_escape "$java_version")",
-    "spring-boot-version": "$(json_escape "$spring_boot_version")"
-  },
-  "overallStatus": "$(json_escape "$overall_status")",
+  "runId": "$(state_get runId)",
+  "timestamp": "${TIMESTAMP}",
+  "overallStatus": "$(state_get overallStatus)",
   "status": {
-    "orchestrator": "$(json_escape "$orchestrator_status")",
-    "preflight": "$(json_escape "$preflight_status")",
-    "execute-rewrite": "$(json_escape "$execute_rewrite_status")"
+    "orchestrator": "$(state_get status_orchestrator)",
+    "preflight": "$(state_get status_preflight)",
+    "execute-rewrite": "$(state_get status_execute_rewrite)",
+    "maven-build": "$(state_get status_maven_build)"
   },
   "log": {
-    "orchestrator": "$(json_escape "$orchestrator_log")",
-    "preflight": "$(json_escape "$preflight_log")",
-    "execute-rewrite": "$(json_escape "$execute_rewrite_log")"
+    "orchestrator": "${REL_DIR}/orchestrator.log",
+    "preflight": "${REL_DIR}/preflight.log",
+    "execute-rewrite": "${REL_DIR}/execute-rewrite.log",
+    "maven-build": "${REL_DIR}/maven-build.log"
   }
 }
 EOF
-
-  mv "$tmp_file" "$run_log_file"
 }
 
-extract_json_value() {
-  local key="$1"
-  local file="$2"
+# ----------------------------------------------------------------------------
+# require_preflight <logfile> <step-name>
+#   Safety gate so that execute-rewrite / maven-build cannot mutate or build an
+#   unvalidated project when invoked directly (bypassing the orchestrator).
+#
+#   * If pre-flight already passed for THIS run (status.preflight == SUCCESS in
+#     the shared run.state), this is a no-op -> orchestrated runs pay nothing.
+#   * Otherwise it runs pre-flight inline against the same run dir, so a direct
+#     standalone call is still validated before anything happens.
+#   * --force bypasses the gate (escape hatch for advanced/manual use).
+#
+#   Returns 0 to proceed, 1 to abort the caller.
+# ----------------------------------------------------------------------------
+require_preflight() {
+  local logfile="$1" step="$2"
+  local lib_dir; lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-  if [[ ! -f "$file" ]]; then
-    echo ""
-    return
+  if [[ "${FORCE:-0}" == "1" ]]; then
+    log "$logfile" "WARN: --force set; skipping pre-flight gate for ${step}"
+    return 0
   fi
 
-  if command -v jq >/dev/null 2>&1; then
-    jq -r --arg k "$key" '.[$k] // empty' "$file" 2>/dev/null || echo ""
-    return
+  if [[ "$(state_get status_preflight)" == "SUCCESS" ]]; then
+    log "$logfile" "pre-flight already passed for this run; proceeding with ${step}"
+    return 0
   fi
 
-  awk -v key="$key" '
-    $0 ~ "\\\"" key "\\\"" {
-      match($0, /: "[^"]*"/)
-      if (RSTART > 0) {
-        value = substr($0, RSTART + 3, RLENGTH - 4)
-        print value
-        exit
-      }
-    }
-  ' "$file"
+  log "$logfile" "pre-flight has not passed for this run; running it now before ${step}"
+  if bash "${lib_dir}/pre-flight.sh" \
+        --module-name "$MODULE_NAME" \
+        --java-version "$JAVA_VERSION" \
+        --spring-boot-version "$SPRING_BOOT_VERSION" \
+        --timestamp "$TIMESTAMP" \
+        --base-dir "$BASE_DIR" >>"$logfile" 2>&1; then
+    log "$logfile" "pre-flight SUCCESS; proceeding with ${step}"
+    return 0
+  fi
+
+  log "$logfile" "ERROR: pre-flight FAILED; refusing to run ${step} (see pre-flight-error.log)"
+  return 1
 }
 
-extract_status_value() {
-  local key="$1"
-  local file="$2"
-
-  if [[ ! -f "$file" ]]; then
-    echo ""
-    return
-  fi
-
-  if command -v jq >/dev/null 2>&1; then
-    jq -r --arg k "$key" '.status[$k] // empty' "$file" 2>/dev/null || echo ""
-    return
-  fi
-
-  awk -v key="$key" '
-    /"status"[[:space:]]*:[[:space:]]*\{/ { in_status = 1; next }
-    in_status && /\}/ { in_status = 0 }
-    in_status && $0 ~ "\\\"" key "\\\"" {
-      match($0, /: "[^"]*"/)
-      if (RSTART > 0) {
-        value = substr($0, RSTART + 3, RLENGTH - 4)
-        print value
-        exit
-      }
-    }
-  ' "$file"
+# ----------------------------------------------------------------------------
+# wait_for_exit <step> [timeout-seconds]
+#   Polls for "<step>.exit" (written by a background mvn job) without busy
+#   spinning. Returns the captured exit code, or 124 on timeout.
+# ----------------------------------------------------------------------------
+wait_for_exit() {
+  local step="$1" timeout="${2:-7200}" waited=0 interval=5
+  while [[ ! -f "${OUT_DIR}/${step}.exit" ]]; do
+    sleep "$interval"
+    waited=$((waited + interval))
+    if [[ $waited -ge $timeout ]]; then
+      return 124
+    fi
+  done
+  return "$(cat "${OUT_DIR}/${step}.exit")"
 }
 
-extract_log_value() {
-  local key="$1"
-  local file="$2"
+# ----------------------------------------------------------------------------
+# OpenRewrite resource resolution.
+#
+# The recipes and artifact coordinates are NOT hard-coded; they live as small
+# fragments under resources/rewrite/<kind>/<version>/ and are consolidated into
+# a single generated rewrite.yml per run.
+#
+#   resources/rewrite/java/<17|21|25>/{rewrite.yml,artifact-coordinates.txt}
+#   resources/rewrite/spring-boot/<3_5|4_0>/{rewrite.yml,artifact-coordinates.txt}
+# ----------------------------------------------------------------------------
+java_resource_dir()   { printf '%s\n' "${RESOURCES_DIR}/java/$1"; }
+# spring-boot version "4.0" maps to the directory "4_0".
+spring_resource_dir() { printf '%s\n' "${RESOURCES_DIR}/spring-boot/${1//./_}"; }
 
-  if [[ ! -f "$file" ]]; then
-    echo ""
-    return
-  fi
-
-  if command -v jq >/dev/null 2>&1; then
-    jq -r --arg k "$key" '.log[$k] // empty' "$file" 2>/dev/null || echo ""
-    return
-  fi
-
-  awk -v key="$key" '
-    /"log"[[:space:]]*:[[:space:]]*\{/ { in_log = 1; next }
-    in_log && /\}/ { in_log = 0 }
-    in_log && $0 ~ "\\\"" key "\\\"" {
-      match($0, /: "[^"]*"/)
-      if (RSTART > 0) {
-        value = substr($0, RSTART + 3, RLENGTH - 4)
-        print value
-        exit
-      }
-    }
-  ' "$file"
+# extract_recipes <yml...>
+#   Prints every recipeList entry (the bare recipe id) from the given
+#   rewrite.yml fragment(s), one per line, trimmed.
+extract_recipes() {
+  grep -hE '^[[:space:]]*-[[:space:]]+' "$@" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*-[[:space:]]+//; s/[[:space:]]+$//'
 }
 
-extract_input_value() {
-  local key="$1"
-  local file="$2"
+# ----------------------------------------------------------------------------
+# generate_rewrite_assets <logfile>
+#   Consolidates the per-version fragments for JAVA_VERSION + SPRING_BOOT_VERSION
+#   into the run directory:
+#
+#     <OUT_DIR>/rewrite.yml               - each source fragment, followed by a
+#                                           composition recipe whose recipeList
+#                                           is the de-duplicated union of all the
+#                                           included recipes.
+#     <OUT_DIR>/artifact-coordinates.txt  - the de-duplicated union of the
+#                                           source artifact coordinates.
+#
+#   On success sets the globals consumed by execute-rewrite.sh:
+#     ACTIVE          - the composition recipe name (-> -Drewrite.activeRecipes)
+#     COORDS          - comma-joined coordinates (-> recipeArtifactCoordinates)
+#     REWRITE_CONFIG  - path to the generated rewrite.yml (-> configLocation)
+#
+#   Returns 0 on success, non-zero (with a logged ERROR) otherwise.
+# ----------------------------------------------------------------------------
+generate_rewrite_assets() {
+  local logfile="$1"
+  local java_dir spring_dir
+  java_dir="$(java_resource_dir "$JAVA_VERSION")"
+  spring_dir="$(spring_resource_dir "$SPRING_BOOT_VERSION")"
 
-  if [[ ! -f "$file" ]]; then
-    echo ""
-    return
-  fi
+  local java_yml="${java_dir}/rewrite.yml"      java_coords="${java_dir}/artifact-coordinates.txt"
+  local spring_yml="${spring_dir}/rewrite.yml"  spring_coords="${spring_dir}/artifact-coordinates.txt"
 
-  if command -v jq >/dev/null 2>&1; then
-    jq -r --arg k "$key" '.inputs[$k] // empty' "$file" 2>/dev/null || echo ""
-    return
-  fi
-
-  awk -v key="$key" '
-    /"inputs"[[:space:]]*:[[:space:]]*\{/ { in_input = 1; next }
-    in_input && /\}/ { in_input = 0 }
-    in_input && $0 ~ "\\\"" key "\\\"" {
-      match($0, /: "[^"]*"/)
-      if (RSTART > 0) {
-        value = substr($0, RSTART + 3, RLENGTH - 4)
-        print value
-        exit
-      }
-    }
-  ' "$file"
-}
-
-update_run_log_stage() {
-  local run_log_file="$1"
-  local stage_key="$2"
-  local stage_status="$3"
-  local overall_status="$4"
-
-  local run_id timestamp application_id module_name java_version spring_boot_version
-  local current_orchestrator current_preflight current_execute
-  local orchestrator_log preflight_log execute_rewrite_log
-
-  run_id="$(extract_json_value "runId" "$run_log_file")"
-  timestamp="$(extract_json_value "timestamp" "$run_log_file")"
-  application_id="$(extract_input_value "application-id" "$run_log_file")"
-  module_name="$(extract_input_value "module-name" "$run_log_file")"
-  java_version="$(extract_input_value "java-version" "$run_log_file")"
-  spring_boot_version="$(extract_input_value "spring-boot-version" "$run_log_file")"
-  current_orchestrator="$(extract_status_value "orchestrator" "$run_log_file")"
-  current_preflight="$(extract_status_value "preflight" "$run_log_file")"
-  current_execute="$(extract_status_value "execute-rewrite" "$run_log_file")"
-  orchestrator_log="$(extract_log_value "orchestrator" "$run_log_file")"
-  preflight_log="$(extract_log_value "preflight" "$run_log_file")"
-  execute_rewrite_log="$(extract_log_value "execute-rewrite" "$run_log_file")"
-
-  case "$stage_key" in
-    orchestrator)
-      current_orchestrator="$stage_status"
-      ;;
-    preflight)
-      current_preflight="$stage_status"
-      ;;
-    execute-rewrite)
-      current_execute="$stage_status"
-      ;;
-    *)
-      echo "Unsupported stage key: $stage_key" >&2
+  local f
+  for f in "$java_yml" "$java_coords" "$spring_yml" "$spring_coords"; do
+    if [[ ! -f "$f" ]]; then
+      log "$logfile" "ERROR: missing OpenRewrite resource '${f}' for java='${JAVA_VERSION}' spring-boot='${SPRING_BOOT_VERSION}'"
       return 1
-      ;;
-  esac
+    fi
+  done
 
-  write_run_log \
-    "$run_log_file" \
-    "$run_id" \
-    "$timestamp" \
-    "$application_id" \
-    "$module_name" \
-    "$java_version" \
-    "$spring_boot_version" \
-    "$overall_status" \
-    "$current_orchestrator" \
-    "$current_preflight" \
-    "$current_execute" \
-    "$orchestrator_log" \
-    "$preflight_log" \
-    "$execute_rewrite_log"
+  # Composition name referenced by activeRecipes, e.g.
+  #   org.cortexaidevkit.spring.boot.UpgradeJava25SpringBoot_4_0
+  ACTIVE="org.cortexaidevkit.spring.boot.UpgradeJava${JAVA_VERSION}SpringBoot_${SPRING_BOOT_VERSION//./_}"
+
+  # De-duplicated union of the underlying recipe ids (order preserved).
+  local recipes
+  recipes="$(extract_recipes "$java_yml" "$spring_yml" | awk 'NF && !seen[$0]++')"
+  if [[ -z "$recipes" ]]; then
+    log "$logfile" "ERROR: no recipes found in '${java_yml}' or '${spring_yml}'"
+    return 1
+  fi
+
+  REWRITE_CONFIG="${OUT_DIR}/rewrite.yml"
+  {
+    cat "$java_yml"
+    printf '\n'
+    cat "$spring_yml"
+    printf '\n---\n'
+    printf 'type: specs.openrewrite.org/v1beta/recipe\n'
+    printf 'name: %s\n' "$ACTIVE"
+    printf 'displayName: Migrate to Java %s and Spring Boot %s\n' "$JAVA_VERSION" "$SPRING_BOOT_VERSION"
+    printf 'recipeList:\n'
+    printf '%s\n' "$recipes" | sed -E 's/^/  - /'
+  } > "$REWRITE_CONFIG"
+
+  # De-duplicated union of artifact coordinates, comma-joined for the plugin.
+  # awk reads each file separately, so a source file without a trailing newline
+  # does not get glued onto the first line of the next file (cat would do that).
+  local coords_file="${OUT_DIR}/artifact-coordinates.txt"
+  awk '{ sub(/[[:space:]]+$/, ""); if (length && !seen[$0]++) print }' \
+    "$java_coords" "$spring_coords" > "$coords_file"
+  COORDS="$(paste -sd, - < "$coords_file")"
+  if [[ -z "$COORDS" ]]; then
+    log "$logfile" "ERROR: no artifact coordinates found in '${java_coords}' or '${spring_coords}'"
+    return 1
+  fi
+
+  log "$logfile" "Generated rewrite config: ${REWRITE_CONFIG}"
+  log "$logfile" "Generated coordinates:    ${coords_file}"
+  return 0
 }

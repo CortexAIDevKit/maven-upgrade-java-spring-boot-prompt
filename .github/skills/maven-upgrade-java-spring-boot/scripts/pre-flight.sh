@@ -1,138 +1,95 @@
 #!/usr/bin/env bash
-
-set -euo pipefail
+#
+# pre-flight.sh - validate the user inputs before any mutation happens.
+#
+# Rules enforced:
+#   * java-version          -> one of 17, 21, 25
+#   * spring-boot-version   -> one of 3.5, 4.0
+#   * module-name           -> "." (root) OR a <module> declared in the root
+#                              pom.xml, and the resolved module must contain a
+#                              parseable pom.xml.
+#
+# Logs are written to:
+#   <out>/preflight.log            (full trace)
+#   <out>/pre-flight-error.log     (validation errors only)
+#
+# Exit code: 0 = all good, 1 = at least one validation failure.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+# shellcheck source=common.sh
+source "${SCRIPT_DIR}/common.sh"
+parse_common_args "$@"
 
-APPLICATION_ID=""
-MODULE_NAME=""
-JAVA_VERSION=""
-SPRING_BOOT_VERSION=""
-TIMESTAMP=""
-WORKSPACE_ROOT="$(pwd)"
+LOG="${OUT_DIR}/preflight.log"
+ERRLOG="${OUT_DIR}/pre-flight-error.log"
+: > "$ERRLOG"
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --application-id)
-      APPLICATION_ID="${2:-}"
-      shift 2
-      ;;
-    --module-name)
-      MODULE_NAME="${2:-}"
-      shift 2
-      ;;
-    --java-version)
-      JAVA_VERSION="${2:-}"
-      shift 2
-      ;;
-    --spring-boot-version)
-      SPRING_BOOT_VERSION="${2:-}"
-      shift 2
-      ;;
-    --timestamp)
-      TIMESTAMP="${2:-}"
-      shift 2
-      ;;
-    --workspace-root)
-      WORKSPACE_ROOT="${2:-}"
-      shift 2
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      exit 2
-      ;;
-  esac
-done
-
-MODULE_NAME="$(normalize_module_name "$MODULE_NAME")"
-JAVA_VERSION="$(normalize_java_version "$JAVA_VERSION")"
-SPRING_BOOT_VERSION="$(normalize_spring_boot_version "$SPRING_BOOT_VERSION")"
-
-if [[ -z "$TIMESTAMP" ]]; then
-  TIMESTAMP="$(timestamp_now)"
-fi
-
-RUN_DIR="$(run_output_dir "$WORKSPACE_ROOT" "$TIMESTAMP" "$MODULE_NAME")"
-mkdir -p "$RUN_DIR"
-
-PREFLIGHT_LOG="$RUN_DIR/preflight.log"
-PREFLIGHT_ERROR_LOG="$RUN_DIR/pre-flight-error.log"
-
-log() {
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] $*" | tee -a "$PREFLIGHT_LOG"
-}
-
+errors=0
 fail() {
-  local message="$1"
-  log "ERROR: $message"
-  echo "$message" >>"$PREFLIGHT_ERROR_LOG"
-  exit 1
+  local line="[$(date +%Y-%m-%dT%H:%M:%S%z)] ERROR: $*"
+  printf '%s\n' "$line" | tee -a "$ERRLOG" "$LOG" >&2
+  errors=$((errors + 1))
 }
 
-log "Starting pre-flight validation"
-log "application-id=$APPLICATION_ID module-name=$MODULE_NAME java-version=$JAVA_VERSION spring-boot-version=$SPRING_BOOT_VERSION"
+log "$LOG" "Preflight started: module='${MODULE_NAME}' java='${JAVA_VERSION}' spring-boot='${SPRING_BOOT_VERSION}'"
 
-if [[ -z "$APPLICATION_ID" ]]; then
-  fail "application-id is required"
-fi
-
+# ---- 1. java-version --------------------------------------------------------
 case "$JAVA_VERSION" in
-  17|21|25)
-    ;;
-  *)
-    fail "java-version must be one of: 17, 21, 25"
-    ;;
+  17|21|25) log "$LOG" "java-version '${JAVA_VERSION}' is valid";;
+  *)        fail "Invalid java-version '${JAVA_VERSION}'. Allowed values: 17, 21, 25";;
 esac
 
+# ---- 2. spring-boot-version -------------------------------------------------
 case "$SPRING_BOOT_VERSION" in
-  3.5|4.0)
-    ;;
-  *)
-    fail "spring-boot-version must be one of: 3.5, 4.0"
-    ;;
+  3.5|4.0) log "$LOG" "spring-boot-version '${SPRING_BOOT_VERSION}' is valid";;
+  *)       fail "Invalid spring-boot-version '${SPRING_BOOT_VERSION}'. Allowed values: 3.5, 4.0";;
 esac
 
-ROOT_POM="$WORKSPACE_ROOT/pom.xml"
+# ---- 3. root pom must exist -------------------------------------------------
+ROOT_POM="${BASE_DIR}/pom.xml"
 if [[ ! -f "$ROOT_POM" ]]; then
-  fail "root pom.xml not found at $ROOT_POM"
+  fail "Root pom.xml not found at '${ROOT_POM}'"
 fi
 
+# ---- 4. module-name validity -----------------------------------------------
 if [[ "$MODULE_NAME" == "." ]]; then
-  TARGET_POM="$ROOT_POM"
+  if [[ -f "$ROOT_POM" ]]; then
+    log "$LOG" "Targeting root project (module='.')"
+    TARGET_POM="$ROOT_POM"
+  fi
 else
-  TARGET_POM="$WORKSPACE_ROOT/$MODULE_NAME/pom.xml"
-
-  if command -v xmllint >/dev/null 2>&1; then
-    MODULE_LIST="$(xmllint --xpath '//modules/module/text()' "$ROOT_POM" 2>/dev/null \
-      | tr ' ' '\n' | grep -v '^$' || true)"
+  if [[ -f "$ROOT_POM" ]] && grep -q "<module>[[:space:]]*${MODULE_NAME}[[:space:]]*</module>" "$ROOT_POM"; then
+    TARGET_POM="${BASE_DIR}/${MODULE_NAME}/pom.xml"
+    if [[ -f "$TARGET_POM" ]]; then
+      log "$LOG" "Module '${MODULE_NAME}' declared in root pom and has its own pom.xml"
+    else
+      fail "Module '${MODULE_NAME}' is declared in root pom but has no pom.xml at '${TARGET_POM}'"
+    fi
   else
-    # awk fallback: handles simple single-line <module> elements only
-    MODULE_LIST="$(awk '
-      /<modules>/ { in_modules=1; next }
-      /<\/modules>/ { in_modules=0 }
-      in_modules {
-        gsub(/^[ \t]+|[ \t]+$/, "", $0)
-        if ($0 ~ /<module>/) {
-          gsub(/<module>|<\/module>/, "", $0)
-          gsub(/^[ \t]+|[ \t]+$/, "", $0)
-          print $0
-        }
-      }
-    ' "$ROOT_POM")"
-  fi
-
-  if ! echo "$MODULE_LIST" | grep -Fxq "$MODULE_NAME"; then
-    fail "module-name '$MODULE_NAME' is not declared in root pom.xml <modules>"
+    fail "Module '${MODULE_NAME}' is not declared in the root pom.xml <modules> section. Use '.' for the root project."
   fi
 fi
 
-if [[ ! -f "$TARGET_POM" ]]; then
-  fail "target pom.xml not found at $TARGET_POM"
+# ---- 5. pom well-formedness (best effort) ----------------------------------
+if [[ -n "${TARGET_POM:-}" && -f "${TARGET_POM:-}" ]]; then
+  if command -v xmllint >/dev/null 2>&1; then
+    if xmllint --noout "$TARGET_POM" >>"$LOG" 2>>"$ERRLOG"; then
+      log "$LOG" "pom.xml is well-formed: ${TARGET_POM}"
+    else
+      fail "pom.xml is not well-formed XML: ${TARGET_POM}"
+    fi
+  else
+    log "$LOG" "xmllint not available; skipping XML well-formedness check"
+  fi
 fi
 
-if ! grep -q "<project" "$TARGET_POM"; then
-  fail "target pom.xml appears invalid (missing <project>) at $TARGET_POM"
+# ---- result -----------------------------------------------------------------
+if [[ $errors -gt 0 ]]; then
+  log "$LOG" "Preflight FAILED with ${errors} error(s). See ${ERRLOG}"
+  state_set status_preflight FAILED
+  exit 1
 fi
 
-log "Pre-flight validation completed successfully"
+log "$LOG" "Preflight SUCCESS"
+state_set status_preflight SUCCESS
+exit 0
